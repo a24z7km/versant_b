@@ -17,10 +17,42 @@ DIFFICULTY_CONFIG = {
     "難しい (10語〜)": (10, 999),
 }
 QUESTIONS_PER_CYCLE = 16
+PROGRESSIVE_MODE = "だんだん難しくなる"
 
 
 def word_count(s: str) -> int:
     return len(s.split())
+
+
+def questions_by_difficulty(difficulty: str) -> list[str]:
+    min_w, max_w = DIFFICULTY_CONFIG[difficulty]
+    return [q for q in ALL_QUESTIONS if min_w <= word_count(q) <= max_w]
+
+
+def build_fixed_questions(difficulty: str) -> list[str]:
+    filtered = questions_by_difficulty(difficulty)
+    return random.sample(filtered, min(QUESTIONS_PER_CYCLE, len(filtered)))
+
+
+def build_progressive_questions() -> list[str]:
+    quotas = [5, 5, QUESTIONS_PER_CYCLE - 10]
+    selected = []
+
+    for difficulty, quota in zip(DIFFICULTY_CONFIG.keys(), quotas):
+        candidates = questions_by_difficulty(difficulty)
+        selected.extend(random.sample(candidates, min(quota, len(candidates))))
+
+    if len(selected) < QUESTIONS_PER_CYCLE:
+        remaining = [q for q in ALL_QUESTIONS if q not in selected]
+        selected.extend(random.sample(remaining, min(QUESTIONS_PER_CYCLE - len(selected), len(remaining))))
+
+    return sorted(selected, key=word_count)
+
+
+def build_questions(mode: str) -> list[str]:
+    if mode == PROGRESSIVE_MODE:
+        return build_progressive_questions()
+    return build_fixed_questions(mode)
 
 
 def make_tts_audio(text: str) -> bytes | None:
@@ -40,9 +72,11 @@ def audio_duration_estimate(text: str) -> float:
     return len(text.split()) * 0.42 + 0.8
 
 
-def reset_cycle(filtered: list):
+def reset_cycle(mode: str):
     st.session_state.update(
-        questions=random.sample(filtered, min(QUESTIONS_PER_CYCLE, len(filtered))),
+        page="test",
+        selected_mode=mode,
+        questions=build_questions(mode),
         q_index=0,
         phase="playing",
         recorder_started=False,
@@ -76,21 +110,43 @@ def playback_countdown():
         st.caption(f"⏱️ 録音開始まで {max(1, int(remaining))} 秒...")
 
 
+# ── トップページ ───────────────────────────────────────────────
+if "page" not in st.session_state:
+    st.session_state.page = "home"
+
+if st.session_state.page == "home":
+    st.title("Repeat the Sentence")
+    st.caption("音声を聞いて、聞こえた英文をそのまま復唱する練習です。")
+
+    mode_options = list(DIFFICULTY_CONFIG.keys()) + [PROGRESSIVE_MODE]
+    mode = st.radio("テストの種類", mode_options, index=0)
+
+    if mode == PROGRESSIVE_MODE:
+        st.info("序盤は短い文章から始まり、後半にかけて長い文章が出ます。")
+    else:
+        min_w, max_w = DIFFICULTY_CONFIG[mode]
+        label = f"{min_w}〜{max_w}語" if max_w < 999 else f"{min_w}語以上"
+        st.info(f"{mode} の文章だけで練習します。（{label}）")
+
+    if st.button("スタート", type="primary"):
+        reset_cycle(mode)
+        st.rerun()
+
+    st.stop()
+
+
 # ── サイドバー ─────────────────────────────────────────────────
 with st.sidebar:
     st.title("設定")
-    difficulty = st.selectbox("難易度", list(DIFFICULTY_CONFIG.keys()), key="difficulty_select")
-
-min_w, max_w = DIFFICULTY_CONFIG[difficulty]
-filtered = [q for q in ALL_QUESTIONS if min_w <= word_count(q) <= max_w]
-
-# ── 初期化 / 難易度変更 ────────────────────────────────────────
-if "active_difficulty" not in st.session_state or st.session_state.active_difficulty != difficulty:
-    reset_cycle(filtered)
-    st.session_state.active_difficulty = difficulty
+    st.write(f"**現在のテスト:** {st.session_state.get('selected_mode', '-')}")
+    if st.button("トップに戻る"):
+        st.session_state.page = "home"
+        st.rerun()
 
 # デフォルト値の保証
 defaults = dict(
+    selected_mode=list(DIFFICULTY_CONFIG.keys())[0],
+    questions=[],
     q_index=0, phase="playing", recorder_started=False,
     recorded_audio=None, tts_audio=None, tts_for_q=-1,
     user_text="", score=0, do_stop_recording=False,
@@ -100,6 +156,9 @@ defaults = dict(
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+if not st.session_state.questions:
+    reset_cycle(st.session_state.selected_mode)
 
 questions = st.session_state.questions
 
@@ -143,7 +202,7 @@ if st.session_state.q_index >= len(questions):
 
     st.divider()
     if st.button("もう一度（シャッフル）", type="primary"):
-        reset_cycle(filtered)
+        reset_cycle(st.session_state.selected_mode)
         st.rerun()
     st.stop()
 
