@@ -358,6 +358,7 @@ def reset_cycle(filtered: list):
         do_stop_recording=False,
         playback_start=None,
         playback_wait=0.0,
+        results=[],
     )
 
 
@@ -398,6 +399,7 @@ defaults = dict(
     recorded_audio=None, tts_audio=None, tts_for_q=-1,
     user_text="", score=0, do_stop_recording=False,
     playback_start=None, playback_wait=0.0,
+    results=[],
 )
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -409,7 +411,41 @@ questions = st.session_state.questions
 st.title("Repeat the Sentence")
 
 if st.session_state.q_index >= len(questions):
-    st.success("🎉 16問終了しました！")
+    results = st.session_state.results
+    avg = sum(r["score"] for r in results) / len(results) if results else 0
+
+    st.title("🎉 お疲れ様でした！")
+
+    # 平均スコア
+    col_avg, col_hi, col_lo = st.columns(3)
+    with col_avg:
+        st.metric("平均スコア", f"{avg:.1f} / 100")
+    with col_hi:
+        best = max(results, key=lambda r: r["score"]) if results else None
+        st.metric("最高スコア", f"{best['score']} / 100" if best else "-")
+    with col_lo:
+        worst = min(results, key=lambda r: r["score"]) if results else None
+        st.metric("最低スコア", f"{worst['score']} / 100" if worst else "-")
+
+    st.divider()
+
+    # 全問結果一覧
+    st.subheader("全問結果")
+    for i, r in enumerate(results, 1):
+        score = r["score"]
+        if score > 90:
+            color = "🟢"
+        elif score > 70:
+            color = "🟡"
+        else:
+            color = "🔴"
+
+        with st.expander(f"{color} Q{i}. {r['question']}　→　**{score} 点**"):
+            st.write(f"**正解:** {r['question']}")
+            st.write(f"**あなたの発声:** {r['user_text'] if r['user_text'] else '（認識できませんでした）'}")
+            st.progress(score / 100)
+
+    st.divider()
     if st.button("もう一度（シャッフル）", type="primary"):
         reset_cycle(filtered)
         st.rerun()
@@ -509,9 +545,19 @@ elif st.session_state.phase == "recording":
             None, target.lower(), user_transcription.lower()
         ).ratio()
 
-        st.session_state.score = int(similarity * 100)
+        score = int(similarity * 100)
+        st.session_state.score = score
         st.session_state.user_text = user_transcription
         st.session_state.recorded_audio = audio_bytes
+
+        # 重複防止: この問題の結果がまだ未登録なら追加
+        if len(st.session_state.results) == st.session_state.q_index:
+            st.session_state.results.append({
+                "question": target,
+                "user_text": user_transcription,
+                "score": score,
+            })
+
         st.session_state.phase = "result"
         st.rerun()
 
