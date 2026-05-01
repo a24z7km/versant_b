@@ -320,7 +320,6 @@ DIFFICULTY_CONFIG = {
     "普通 (6〜9語)": (6, 9),
     "難しい (10語〜)": (10, 999),
 }
-
 QUESTIONS_PER_CYCLE = 16
 
 
@@ -328,32 +327,59 @@ def word_count(s: str) -> int:
     return len(s.split())
 
 
-def make_tts_audio(text: str) -> bytes:
-    tts = gTTS(text=text, lang="en")
-    fp = io.BytesIO()
-    tts.write_to_fp(fp)
-    fp.seek(0)
-    return fp.read()
+def make_tts_audio(text: str) -> bytes | None:
+    for _ in range(2):
+        try:
+            tts = gTTS(text=text, lang="en")
+            fp = io.BytesIO()
+            tts.write_to_fp(fp)
+            fp.seek(0)
+            return fp.read()
+        except Exception:
+            pass
+    return None
 
 
 def audio_duration_estimate(text: str) -> float:
-    """単語数から再生時間を推定（秒）"""
     return len(text.split()) * 0.42 + 0.8
 
 
-def reset_for_new_cycle(filtered: list):
-    st.session_state.questions = random.sample(filtered, min(QUESTIONS_PER_CYCLE, len(filtered)))
-    st.session_state.q_index = 0
-    st.session_state.phase = "playing"
-    st.session_state.recorder_started = False
-    st.session_state.recorded_audio = None
-    st.session_state.tts_audio = None
-    st.session_state.tts_for_q = -1
-    st.session_state.user_text = ""
-    st.session_state.score = 0
+def reset_cycle(filtered: list):
+    st.session_state.update(
+        questions=random.sample(filtered, min(QUESTIONS_PER_CYCLE, len(filtered))),
+        q_index=0,
+        phase="playing",
+        recorder_started=False,
+        recorded_audio=None,
+        tts_audio=None,
+        tts_for_q=-1,
+        user_text="",
+        score=0,
+        do_stop_recording=False,
+        playback_start=None,
+        playback_wait=0.0,
+    )
 
 
-# ── サイドバー ────────────────────────────────────────────────
+# ── フラグメント：time.sleep なしのカウントダウン ─────────────
+@st.fragment(run_every=0.5)
+def playback_countdown():
+    if st.session_state.get("phase") != "playing":
+        return
+    if not st.session_state.get("playback_start"):
+        return
+    elapsed = time.time() - st.session_state.playback_start
+    remaining = st.session_state.playback_wait - elapsed
+    if remaining <= 0:
+        st.session_state.phase = "recording"
+        st.session_state.recorder_started = False
+        st.session_state.playback_start = None
+        st.rerun(scope="app")
+    else:
+        st.caption(f"⏱️ 録音開始まで {max(1, int(remaining))} 秒...")
+
+
+# ── サイドバー ─────────────────────────────────────────────────
 with st.sidebar:
     st.title("設定")
     difficulty = st.selectbox("難易度", list(DIFFICULTY_CONFIG.keys()), key="difficulty_select")
@@ -361,80 +387,85 @@ with st.sidebar:
 min_w, max_w = DIFFICULTY_CONFIG[difficulty]
 filtered = [q for q in ALL_QUESTIONS if min_w <= word_count(q) <= max_w]
 
-# ── 初期化 / 難易度変更 ─────────────────────────────────────────
+# ── 初期化 / 難易度変更 ────────────────────────────────────────
 if "active_difficulty" not in st.session_state or st.session_state.active_difficulty != difficulty:
-    reset_for_new_cycle(filtered)
+    reset_cycle(filtered)
     st.session_state.active_difficulty = difficulty
 
-for key, default in [
-    ("q_index", 0),
-    ("phase", "playing"),
-    ("recorder_started", False),
-    ("recorded_audio", None),
-    ("tts_audio", None),
-    ("tts_for_q", -1),
-    ("user_text", ""),
-    ("score", 0),
-    ("do_stop_recording", False),
-]:
-    if key not in st.session_state:
-        st.session_state[key] = default
+# デフォルト値の保証
+defaults = dict(
+    q_index=0, phase="playing", recorder_started=False,
+    recorded_audio=None, tts_audio=None, tts_for_q=-1,
+    user_text="", score=0, do_stop_recording=False,
+    playback_start=None, playback_wait=0.0,
+)
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 questions = st.session_state.questions
 
-# ── タイトル ───────────────────────────────────────────────────
+# ── メイン ────────────────────────────────────────────────────
 st.title("Repeat the Sentence")
 
-# ── 全問終了 ───────────────────────────────────────────────────
 if st.session_state.q_index >= len(questions):
     st.success("🎉 16問終了しました！")
     if st.button("もう一度（シャッフル）", type="primary"):
-        reset_for_new_cycle(filtered)
+        reset_cycle(filtered)
         st.rerun()
     st.stop()
 
 target = questions[st.session_state.q_index]
 st.subheader(f"Question {st.session_state.q_index + 1} / {len(questions)}")
 
-# ══════════════════════════════════════════════════════════════
-# Phase: playing  ── 音声自動再生 → 待機 → 録音フェーズへ
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+# Phase: playing
+# ══════════════════════════════════════════════════════
 if st.session_state.phase == "playing":
+
     # TTS 生成（問題が変わったときだけ）
     if st.session_state.tts_for_q != st.session_state.q_index:
         with st.spinner("音声を生成中..."):
             audio = make_tts_audio(target)
+        if audio is None:
+            st.error("音声の生成に失敗しました。")
+            col_r, col_s = st.columns(2)
+            with col_r:
+                if st.button("🔄 リトライ"):
+                    st.rerun()
+            with col_s:
+                if st.button("⏭️ この問題をスキップ"):
+                    st.session_state.q_index += 1
+                    st.session_state.tts_for_q = -1
+                    st.rerun()
+            st.stop()
+
         st.session_state.tts_audio = audio
         st.session_state.tts_for_q = st.session_state.q_index
-
-    est = audio_duration_estimate(target)
-    wait = est + 2.0  # 音声終了後 2 秒待ってから録音開始
+        st.session_state.playback_start = time.time()
+        st.session_state.playback_wait = audio_duration_estimate(target) + 2.0
 
     st.info("🎧 音声を聞いてください。テキストは隠されています。")
     st.audio(st.session_state.tts_audio, format="audio/mp3", autoplay=True)
-    st.caption(f"⏱️ 約 {int(wait)} 秒後に録音が自動的に開始されます...")
+    playback_countdown()  # 0.5秒ごとに独立して再実行されるフラグメント
 
-    time.sleep(wait)  # ブラウザで音声が再生される間 Python が待機
-
-    st.session_state.phase = "recording"
-    st.session_state.recorder_started = False
-    st.rerun()
-
-# ══════════════════════════════════════════════════════════════
-# Phase: recording  ── 自動録音開始・完了ボタン
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+# Phase: recording
+# ══════════════════════════════════════════════════════
 elif st.session_state.phase == "recording":
     st.error("🔴 **録音中です。文章を復唱してください。**")
 
-    col_btn, col_hint = st.columns([1, 3])
-    with col_btn:
+    col_stop, col_replay, _ = st.columns([1, 1, 2])
+    with col_stop:
         if st.button("✅ 録音完了", type="primary"):
             st.session_state.do_stop_recording = True
             st.rerun()
-    with col_hint:
-        st.caption("マイクボタンを押して止めることもできます。")
+    with col_replay:
+        if st.button("🔊 もう一度聞く"):
+            if st.session_state.tts_audio:
+                st.audio(st.session_state.tts_audio, format="audio/mp3", autoplay=True)
 
-    # 完了ボタン押下時: JS でマイクボタンをクリック
+    # 完了ボタン押下時に JS でマイクボタンをクリック
     if st.session_state.do_stop_recording:
         st.session_state.do_stop_recording = False
         components.html("""
@@ -451,16 +482,16 @@ elif st.session_state.phase == "recording":
         </script>
         """, height=0)
 
-    # 初回マウント時のみ auto_start=True
+    # 初回マウント時のみ auto_start=True（rerun で再起動しない）
     auto_start = not st.session_state.recorder_started
     audio_bytes = audio_recorder(
         text="",
         auto_start=auto_start,
-        pause_threshold=4.0,   # 4 秒の沈黙で自動停止
+        pause_threshold=4.0,
         sample_rate=44_100,
         key="main_recorder",
     )
-    st.session_state.recorder_started = True  # 次回以降 auto_start しない
+    st.session_state.recorder_started = True
 
     if audio_bytes:
         with st.spinner("音声を解析中..."):
@@ -471,9 +502,8 @@ elif st.session_state.phase == "recording":
                 user_transcription = recognizer.recognize_google(audio_data)
             except sr.UnknownValueError:
                 user_transcription = ""
-            except sr.RequestError as e:
-                st.error(f"音声認識エラー: {e}")
-                st.stop()
+            except sr.RequestError:
+                user_transcription = ""
 
         similarity = difflib.SequenceMatcher(
             None, target.lower(), user_transcription.lower()
@@ -485,9 +515,9 @@ elif st.session_state.phase == "recording":
         st.session_state.phase = "result"
         st.rerun()
 
-# ══════════════════════════════════════════════════════════════
-# Phase: result  ── スコア表示
-# ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+# Phase: result
+# ══════════════════════════════════════════════════════
 elif st.session_state.phase == "result":
     st.metric("判定スコア", f"{st.session_state.score} / 100")
 
@@ -506,7 +536,8 @@ elif st.session_state.phase == "result":
         if st.button("▶️ 正解の音声を再生"):
             with st.spinner("生成中..."):
                 audio = make_tts_audio(target)
-            st.audio(audio, format="audio/mp3", autoplay=True)
+            if audio:
+                st.audio(audio, format="audio/mp3", autoplay=True)
 
     with col2:
         st.error(f"**【AIが聞き取った発声】**\n\n{st.session_state.user_text}")
