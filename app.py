@@ -5,7 +5,6 @@ import io
 from gtts import gTTS
 import speech_recognition as sr
 
-# 問題リスト
 QUESTIONS = [
     "You're taller than he is.",
     "He wanted to know if the price included breakfast.",
@@ -32,46 +31,58 @@ def make_tts_audio(text: str) -> bytes:
     mp3_fp.seek(0)
     return mp3_fp.read()
 
-# アプリの状態管理
-if "q_index" not in st.session_state:
-    st.session_state.q_index = 0
-if "show_result" not in st.session_state:
-    st.session_state.show_result = False
-if "user_text" not in st.session_state:
-    st.session_state.user_text = ""
-if "recorded_audio" not in st.session_state:
-    st.session_state.recorded_audio = None
+# 状態管理
+for key, default in [
+    ("q_index", 0),
+    ("show_result", False),
+    ("user_text", ""),
+    ("recorded_audio", None),
+    ("tts_audio_index", -1),  # どの問題のTTSか記録
+    ("tts_audio", None),
+    ("result_tts_audio", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 st.title("Repeat the Sentence (音声テスト版)")
 
-# 全問終了判定
 if st.session_state.q_index >= len(QUESTIONS):
     st.success("🎉 全問終了しました！")
     if st.button("最初からリセット"):
         st.session_state.q_index = 0
         st.session_state.show_result = False
+        st.session_state.tts_audio = None
+        st.session_state.tts_audio_index = -1
         st.rerun()
     st.stop()
 
-# 現在の問題
 target = QUESTIONS[st.session_state.q_index]
 
 st.subheader(f"Question {st.session_state.q_index + 1} / {len(QUESTIONS)}")
 
 # ==========================================
-# フェーズ1：回答中（テキストは隠す）
+# フェーズ1：回答中
 # ==========================================
 if not st.session_state.show_result:
     st.write("🎧 **1. 音声を聞く** (テキストは隠されています)")
 
     if st.button("▶️ 問題の音声を再生"):
         with st.spinner("音声を生成中..."):
-            st.audio(make_tts_audio(target), format="audio/mp3")
+            st.session_state.tts_audio = make_tts_audio(target)
+            st.session_state.tts_audio_index = st.session_state.q_index
+
+    # 同じ問題のTTSのみ表示（問題が変わったら消す）
+    if st.session_state.tts_audio and st.session_state.tts_audio_index == st.session_state.q_index:
+        st.audio(st.session_state.tts_audio, format="audio/mp3")
 
     st.divider()
 
     st.write("🎙️ **2. 復唱して録音する** (マイクアイコンを押して開始 / 停止)")
-    audio_bytes = audio_recorder()
+    # pause_threshold を長めに設定して途中で切れないようにする
+    audio_bytes = audio_recorder(
+        pause_threshold=3.0,
+        sample_rate=44_100,
+    )
 
     if audio_bytes:
         st.audio(audio_bytes, format="audio/wav")
@@ -98,6 +109,7 @@ if not st.session_state.show_result:
                 st.session_state.score = int(similarity * 100)
                 st.session_state.user_text = user_transcription
                 st.session_state.recorded_audio = audio_bytes
+                st.session_state.result_tts_audio = None  # 結果ページ用TTS はまだ未生成
                 st.session_state.show_result = True
                 st.rerun()
 
@@ -122,7 +134,9 @@ else:
         st.info(f"**【正解の文章】**\n\n{target}")
         if st.button("▶️ 正解の音声を再生"):
             with st.spinner("音声を生成中..."):
-                st.audio(make_tts_audio(target), format="audio/mp3")
+                st.session_state.result_tts_audio = make_tts_audio(target)
+        if st.session_state.result_tts_audio:
+            st.audio(st.session_state.result_tts_audio, format="audio/mp3")
 
     with col2:
         st.error(f"**【AIが聞き取ったあなたの発声】**\n\n{st.session_state.user_text}")
@@ -136,4 +150,7 @@ else:
         st.session_state.q_index += 1
         st.session_state.show_result = False
         st.session_state.recorded_audio = None
+        st.session_state.tts_audio = None
+        st.session_state.tts_audio_index = -1
+        st.session_state.result_tts_audio = None
         st.rerun()
