@@ -83,6 +83,7 @@ def reset_cycle(mode: str):
         recorded_audio=None,
         tts_audio=None,
         tts_for_q=-1,
+        result_audio_for_q=-1,
         user_text="",
         score=0,
         do_stop_recording=False,
@@ -90,6 +91,23 @@ def reset_cycle(mode: str):
         playback_wait=0.0,
         results=[],
     )
+
+
+def retry_current_question():
+    st.session_state.phase = "playing"
+    st.session_state.recorder_started = False
+    st.session_state.recorded_audio = None
+    st.session_state.tts_audio = None
+    st.session_state.tts_for_q = -1
+    st.session_state.result_audio_for_q = -1
+    st.session_state.user_text = ""
+    st.session_state.score = 0
+    st.session_state.do_stop_recording = False
+    st.session_state.playback_start = None
+    st.session_state.playback_wait = 0.0
+
+    if len(st.session_state.results) > st.session_state.q_index:
+        st.session_state.results = st.session_state.results[:st.session_state.q_index]
 
 
 # ── フラグメント：time.sleep なしのカウントダウン ─────────────
@@ -148,7 +166,7 @@ defaults = dict(
     selected_mode=list(DIFFICULTY_CONFIG.keys())[0],
     questions=[],
     q_index=0, phase="playing", recorder_started=False,
-    recorded_audio=None, tts_audio=None, tts_for_q=-1,
+    recorded_audio=None, tts_audio=None, tts_for_q=-1, result_audio_for_q=-1,
     user_text="", score=0, do_stop_recording=False,
     playback_start=None, playback_wait=0.0,
     results=[],
@@ -246,7 +264,7 @@ if st.session_state.phase == "playing":
 elif st.session_state.phase == "recording":
     st.error("🔴 **録音中です。文章を復唱してください。**")
 
-    col_stop, col_replay, _ = st.columns([1, 1, 2])
+    col_stop, col_replay, col_retry = st.columns([1, 1, 1])
     with col_stop:
         if st.button("✅ 録音完了", type="primary"):
             st.session_state.do_stop_recording = True
@@ -255,6 +273,10 @@ elif st.session_state.phase == "recording":
         if st.button("🔊 もう一度聞く"):
             if st.session_state.tts_audio:
                 st.audio(st.session_state.tts_audio, format="audio/mp3", autoplay=True)
+    with col_retry:
+        if st.button("問題に戻る"):
+            retry_current_question()
+            st.rerun()
 
     # 完了ボタン押下時に JS でマイクボタンをクリック
     if st.session_state.do_stop_recording:
@@ -334,11 +356,14 @@ elif st.session_state.phase == "result":
 
     with col1:
         st.info(f"**【正解の文章】**\n\n{target}")
-        if st.button("▶️ 正解の音声を再生"):
-            with st.spinner("生成中..."):
-                audio = make_tts_audio(target)
+        if st.session_state.result_audio_for_q != st.session_state.q_index:
+            audio = st.session_state.tts_audio
+            if audio is None:
+                with st.spinner("正解の音声を生成中..."):
+                    audio = make_tts_audio(target)
             if audio:
                 st.audio(audio, format="audio/mp3", autoplay=True)
+            st.session_state.result_audio_for_q = st.session_state.q_index
 
     with col2:
         st.error(f"**【AIが聞き取った発声】**\n\n{st.session_state.user_text}")
@@ -347,11 +372,19 @@ elif st.session_state.phase == "result":
             st.audio(st.session_state.recorded_audio, format="audio/wav")
 
     st.divider()
-    if st.button("Next Question ➡", type="primary"):
-        st.session_state.q_index += 1
-        st.session_state.phase = "playing"
-        st.session_state.recorder_started = False
-        st.session_state.recorded_audio = None
-        st.session_state.tts_audio = None
-        st.session_state.tts_for_q = -1
-        st.rerun()
+    col_retry_result, col_next = st.columns(2)
+    with col_retry_result:
+        if st.button("この問題をやり直す"):
+            retry_current_question()
+            st.rerun()
+    with col_next:
+        next_label = "Next Question ➡"
+        if st.button(next_label, type="primary"):
+            st.session_state.q_index += 1
+            st.session_state.phase = "playing"
+            st.session_state.recorder_started = False
+            st.session_state.recorded_audio = None
+            st.session_state.tts_audio = None
+            st.session_state.tts_for_q = -1
+            st.session_state.result_audio_for_q = -1
+            st.rerun()
