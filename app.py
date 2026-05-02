@@ -13,8 +13,9 @@ from questions import ALL_QUESTIONS
 
 DIFFICULTY_CONFIG = {
     "簡単 (〜5語)": (0, 5),
-    "普通 (6〜9語)": (6, 9),
-    "難しい (10語〜)": (10, 999),
+    "やや簡単 (6〜9語)": (6, 9),
+    "普通 (10〜12語)": (10, 12),
+    "難しい (13〜15語)": (13, 15),
 }
 QUESTIONS_PER_CYCLE = 16
 PROGRESSIVE_MODE = "だんだん難しくなる"
@@ -35,7 +36,7 @@ def build_fixed_questions(difficulty: str) -> list[str]:
 
 
 def build_progressive_questions() -> list[str]:
-    quotas = [5, 5, QUESTIONS_PER_CYCLE - 10]
+    quotas = [QUESTIONS_PER_CYCLE // len(DIFFICULTY_CONFIG)] * len(DIFFICULTY_CONFIG)
     selected = []
 
     for difficulty, quota in zip(DIFFICULTY_CONFIG.keys(), quotas):
@@ -143,7 +144,7 @@ if st.session_state.page == "home":
         st.info("序盤は短い文章から始まり、後半にかけて長い文章が出ます。")
     else:
         min_w, max_w = DIFFICULTY_CONFIG[mode]
-        label = f"{min_w}〜{max_w}語" if max_w < 999 else f"{min_w}語以上"
+        label = f"〜{max_w}語" if min_w == 0 else f"{min_w}〜{max_w}語"
         st.info(f"{mode} の文章だけで練習します。（{label}）")
 
     if st.button("スタート", type="primary"):
