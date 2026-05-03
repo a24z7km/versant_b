@@ -56,17 +56,25 @@ def build_questions(mode: str) -> list[str]:
     return build_fixed_questions(mode)
 
 
-def make_tts_audio(text: str) -> bytes | None:
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+def generate_tts_audio(text: str) -> bytes:
     for _ in range(2):
         try:
-            tts = gTTS(text=text, lang="en")
+            tts = gTTS(text=text, lang="en", timeout=8)
             fp = io.BytesIO()
             tts.write_to_fp(fp)
             fp.seek(0)
             return fp.read()
         except Exception:
             pass
-    return None
+    raise RuntimeError("TTS generation failed")
+
+
+def make_tts_audio(text: str) -> bytes | None:
+    try:
+        return generate_tts_audio(text)
+    except Exception:
+        return None
 
 
 def audio_duration_estimate(text: str) -> float:
@@ -88,6 +96,7 @@ def reset_cycle(mode: str):
         user_text="",
         score=0,
         do_stop_recording=False,
+        recorder_instance=0,
         playback_start=None,
         playback_wait=0.0,
         results=[],
@@ -104,6 +113,7 @@ def retry_current_question():
     st.session_state.user_text = ""
     st.session_state.score = 0
     st.session_state.do_stop_recording = False
+    st.session_state.recorder_instance += 1
     st.session_state.playback_start = None
     st.session_state.playback_wait = 0.0
 
@@ -168,7 +178,7 @@ defaults = dict(
     questions=[],
     q_index=0, phase="playing", recorder_started=False,
     recorded_audio=None, tts_audio=None, tts_for_q=-1, result_audio_for_q=-1,
-    user_text="", score=0, do_stop_recording=False,
+    user_text="", score=0, do_stop_recording=False, recorder_instance=0,
     playback_start=None, playback_wait=0.0,
     results=[],
 )
@@ -288,7 +298,10 @@ elif st.session_state.phase == "recording":
             var frames = window.parent.document.querySelectorAll('iframe');
             for (var i = 0; i < frames.length; i++) {
                 try {
-                    var btn = frames[i].contentDocument.querySelector('button[aria-label="Record"]');
+                    var doc = frames[i].contentDocument;
+                    var btn = doc.querySelector(
+                        'button[aria-label*="Stop"], button[title*="Stop"], button[aria-label*="Record"], button[title*="Record"], button'
+                    );
                     if (btn) { btn.click(); break; }
                 } catch(e) {}
             }
@@ -303,7 +316,7 @@ elif st.session_state.phase == "recording":
         auto_start=auto_start,
         pause_threshold=4.0,
         sample_rate=44_100,
-        key="main_recorder",
+        key=f"main_recorder_{st.session_state.q_index}_{st.session_state.recorder_instance}",
     )
     st.session_state.recorder_started = True
 
@@ -388,4 +401,5 @@ elif st.session_state.phase == "result":
             st.session_state.tts_audio = None
             st.session_state.tts_for_q = -1
             st.session_state.result_audio_for_q = -1
+            st.session_state.recorder_instance += 1
             st.rerun()
